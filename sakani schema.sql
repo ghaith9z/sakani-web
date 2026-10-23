@@ -167,14 +167,15 @@ create table verification_docs (
 );
 
 -- ---------- 5) المدفوعات والحجوزات ----------
--- المدفوعات: رسوم نشر الإعلان فقط (5 ر.ع لمدة 4 أشهر) تُدفع بعد موافقة المشرف.
+-- المدفوعات: رسوم نشر الإعلان فقط (5 ر.ع لمدة 4 أشهر). تُدفع يدويًا عبر واتساب بعد موافقتك،
+-- وأنت تسجّل استلامها بالدالة admin_confirm_listing_paid فينزل الإعلان.
 create table payments (
   id          uuid primary key default gen_random_uuid(),
   kind        payment_kind not null default 'listing_fee',
   payer_id    uuid not null references profiles(id),
   amount      numeric(8,3) not null check (amount > 0),
   currency    char(3) not null default 'OMR',
-  gateway     text not null default 'thawani',
+  gateway     text not null default 'manual',          -- manual = دفع عبر واتساب/تحويل، يمكن لاحقًا ربط بوابة
   gateway_ref text unique,
   status      payment_status not null default 'pending',
   property_id uuid references properties(id),
@@ -579,21 +580,29 @@ begin
   end if;
 end $$;
 
--- ---------- 9) دفع رسوم النشر (يستدعيه السيرفر/الـ webhook فقط، بدور service_role) ----------
--- المسار: المالك يرسل إعلانه ← المشرف يوافق ← المالك يدفع 5 ر.ع ← Edge Function تنشئ payments (pending)
--- وجلسة دفع ثواني ← الـ webhook يتحقق من التوقيع ثم يستدعي activate_listing.
-create function activate_listing(p_kind text, p_id uuid, p_payment uuid) returns void
+-- ---------- 9) تأكيد دفع رسوم النشر (يدوي عبر واتساب) ----------
+-- المسار: المالك يرسل إعلانه ← أنت توافق (admin_review) ← تتواصل معه على واتساب وتستلم الرسوم
+-- ← تضغط "تم استلام الدفع" فتُستدعى admin_confirm_listing_paid: يسجّل الدفعة وينشر الإعلان 4 أشهر.
+create function admin_confirm_listing_paid(p_kind text, p_id uuid, p_amount numeric default 5, p_note text default null) returns void
 language plpgsql security definer set search_path = public as $$
+declare v_owner uuid;
 begin
+  if not is_admin() then raise exception 'للمشرف فقط'; end if;
   if p_kind = 'property' then
-    update properties set status = 'active', expires_at = now() + interval '4 months' where id = p_id and status = 'approved';
+    update properties set status = 'active', expires_at = now() + interval '4 months'
+    where id = p_id and status = 'approved' returning owner_id into v_owner;
   elsif p_kind = 'bus' then
-    update bus_services set status = 'active', expires_at = now() + interval '4 months' where id = p_id and status = 'approved';
+    update bus_services set status = 'active', expires_at = now() + interval '4 months'
+    where id = p_id and status = 'approved' returning owner_id into v_owner;
   else
     raise exception 'نوع غير معروف';
   end if;
-  if not found then raise exception 'الإعلان غير موافق عليه بعد'; end if;
-  update payments set status = 'paid', paid_at = now() where id = p_payment;
+  if v_owner is null then raise exception 'الإعلان غير موافق عليه بعد'; end if;
+  insert into payments (kind, payer_id, amount, gateway, status, property_id, bus_id, paid_at)
+  values ('listing_fee', v_owner, p_amount, 'manual', 'paid',
+          case when p_kind = 'property' then p_id end, case when p_kind = 'bus' then p_id end, now());
+  insert into audit_log (admin_id, action, target_table, target_id, details)
+  values (auth.uid(), 'confirm_fee_paid', p_kind, p_id, jsonb_build_object('amount', p_amount, 'note', p_note));
 end $$;
 
 -- ---------- 10) دوال المالك والمشرف ----------
@@ -874,22 +883,21 @@ grant update (name, bedrooms, price) on apartments to authenticated;
 grant update (name, governorate_id, from_wilayat_id, from_area, contact_phone, via_wilayat_ids, via_note, go_time, back_time, days, price_monthly, capacity, vehicle, services, note) on bus_services to authenticated;
 
 -- من يقدر ينفذ الدوال
-revoke execute on function activate_listing(text, uuid, uuid), release_seats(bookings),
+revoke execute on function release_seats(bookings),
   expire_pending_bookings(), expire_listings() from public, anon, authenticated;
-grant  execute on function activate_listing(text, uuid, uuid),
-  expire_pending_bookings(), expire_listings() to service_role;
+grant  execute on function expire_pending_bookings(), expire_listings() to service_role;
 revoke execute on function book_room(uuid, int, jsonb, text), book_apartment(uuid, jsonb, text), book_bus(uuid, int, jsonb, text),
   cancel_booking(uuid), owner_decide_booking(uuid, boolean), submit_review(text, uuid, int, text),
   adjust_outside(text, uuid, int), admin_review(text, uuid, boolean, text),
   admin_set_listing_paused(text, uuid, boolean), admin_set_user_status(uuid, boolean),
   admin_set_verified(uuid, boolean), admin_hide_review(uuid, boolean), admin_handle_report(uuid, text, text),
-  admin_dashboard() from public, anon;
+  admin_confirm_listing_paid(text, uuid, numeric, text), admin_dashboard() from public, anon;
 grant  execute on function book_room(uuid, int, jsonb, text), book_apartment(uuid, jsonb, text), book_bus(uuid, int, jsonb, text),
   cancel_booking(uuid), owner_decide_booking(uuid, boolean), submit_review(text, uuid, int, text),
   adjust_outside(text, uuid, int), admin_review(text, uuid, boolean, text),
   admin_set_listing_paused(text, uuid, boolean), admin_set_user_status(uuid, boolean),
   admin_set_verified(uuid, boolean), admin_hide_review(uuid, boolean), admin_handle_report(uuid, text, text),
-  admin_dashboard() to authenticated;
+  admin_confirm_listing_paid(text, uuid, numeric, text), admin_dashboard() to authenticated;
 
 -- التخزين: صور الإعلانات عامة للقراءة، والوثائق خاصة
 -- مسار الملف لازم يبدأ بمعرّف المستخدم: <user_id>/<ملف>
