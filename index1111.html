@@ -92,7 +92,7 @@ html.wbg,html.wbg body{background:#6B1E2E}
 /* ============ إعدادات Supabase: بدّل القيم هنا فقط ============ */
 const SUPABASE_URL="https://owgxipjqwzknlsicpjlx.supabase.co/rest/v1/"
 const SUPABASE_PUBLISHABLE_KEY="sb_publishable_QIJry17jqfRBNyIi9Ue1UQ_VuUfKpuv";          // من Project Settings > API > Publishable key (ما نستخدم service_role هنا أبدًا)
-const ADMIN_EMAILS=["your-email@example.com"];                  // بريدك أنت (المشرف): يتأكد برمز OTP فما أحد يقدر ينتحله
+const ADMIN_EMAILS=["ghaithtan1221@gmail.com"];                  // بريدك أنت (المشرف): يتأكد برمز OTP فما أحد يقدر ينتحله
 const PROFILES_TABLE="profiles";
 const PC={name:"full_name",phone:"phone",email:"email"};        // أسماء الأعمدة في جدول profiles
 const sb=(window.supabase&&/^https:\/\/[a-z0-9-]+\.supabase\.co$/i.test(SUPABASE_URL)&&!/YOUR/.test(SUPABASE_URL+SUPABASE_PUBLISHABLE_KEY))?window.supabase.createClient(SUPABASE_URL,SUPABASE_PUBLISHABLE_KEY,{auth:{persistSession:true,autoRefreshToken:true}}):null;
